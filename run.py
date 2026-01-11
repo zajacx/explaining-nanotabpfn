@@ -4,19 +4,16 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import types
+import os
 from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
-
-# --- LXT Imports ---
+from model import NanoTabPFNModel
 from lxt.efficient.patches import (
     patch_method, 
     layer_norm_forward, 
     non_linear_forward, 
     cp_multi_head_attention_forward
 )
-
-# Import your model
-from model import NanoTabPFNModel
 
 def get_default_device():
     if torch.cuda.is_available(): return "cuda"
@@ -66,7 +63,7 @@ def save_visualizations(feature_relevance, row_relevance, feature_names, support
 
     # --- Plot 2: Row Importance ---
     x_indices = np.arange(len(row_relevance))
-    row_colors = ['#ff7f0e' if l == 0 else '#9467bd' for l in support_labels]
+    row_colors = ["#ff7700" if l == 0 else '#9467bd' for l in support_labels]
     
     axes[1].bar(x_indices, row_relevance, color=row_colors, alpha=0.8)
     
@@ -84,11 +81,110 @@ def save_visualizations(feature_relevance, row_relevance, feature_names, support
     plt.savefig(filename, dpi=300)
     plt.close()
 
-def main():
-    device = get_default_device()
-    print(f"Running on device: {device}")
 
-    # --- 1. INITIALIZE MODEL ---
+def save_enhanced_visualizations(feature_relevance, row_relevance, feature_names, feature_values, 
+                                 support_labels, query_class_idx, true_class_idx, class_names, all_logits, filename):
+    plt.style.use('seaborn-v0_8-whitegrid')
+    
+    # 1. SETUP GRID: Give the Row Plot 2x the space of the Feature Plot
+    # Ratios: [Features (1.2), Gap (0.2), Balance (0.4), Gap (0.2), Rows (2.5)]
+    fig = plt.figure(figsize=(26, 9))
+    gs = fig.add_gridspec(1, 5, width_ratios=[1.2, 0.2, 0.4, 0.2, 2.5]) 
+    
+    ax_feats = fig.add_subplot(gs[0, 0])
+    # gs[0, 1] is a spacer
+    ax_balance = fig.add_subplot(gs[0, 2]) 
+    # gs[0, 3] is a spacer
+    ax_rows = fig.add_subplot(gs[0, 4])
+    
+    # Get String Labels
+    pred_label_str = class_names[query_class_idx]
+    true_label_str = class_names[true_class_idx]
+    
+    # --- SUPER TITLE ---
+    title_color = "green" if query_class_idx == true_class_idx else "red"
+    status = "CORRECT" if query_class_idx == true_class_idx else "INCORRECT"
+    # New Info: Display Raw Logits
+    logit_benign = all_logits[1] # Assuming index 1 is benign
+    logit_malignant = all_logits[0]
+
+    fig.suptitle(
+        f"Prediction: {pred_label_str} ({logit_benign:.2f}) | True: {true_label_str}\n"
+        f"Alternative Logit: {logit_malignant:.2f} | Status: {status}", 
+        fontsize=18, weight='bold', color=title_color
+    )
+
+    # --- PLOT 1: FEATURE IMPORTANCE (Left) ---
+    colors = ['#d62728' if r < 0 else '#1f77b4' for r in feature_relevance]
+    top_n = min(15, len(feature_names))
+    indices = np.argsort(np.abs(feature_relevance))[-top_n:]
+    
+    rich_labels = [f"{feature_names[i]}\n({feature_values[i]:.2f})" for i in indices]
+    
+    ax_feats.barh(range(top_n), feature_relevance[indices], color=np.array(colors)[indices])
+    ax_feats.set_yticks(range(top_n))
+    ax_feats.set_yticklabels(rich_labels, fontsize=10)
+    ax_feats.set_title(f"Top {top_n} Features\n(feature relevance scores)", fontsize=14)
+    ax_feats.set_xlabel("Relevance", fontsize=12)
+    
+    # --- RESTORED LEGEND ---
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='#1f77b4', label=f'Evidence FOR {pred_label_str}'),
+        Patch(facecolor='#d62728', label=f'Evidence AGAINST {pred_label_str}')
+    ]
+    # Place legend inside the plot to save space, or below if crowded
+    ax_feats.legend(handles=legend_elements, loc='lower right', fontsize=10, frameon=True)
+
+    # --- PLOT 2: THE BALANCE OF POWER (Middle) ---
+    # Sum of all features vs Sum of all rows
+    total_feat_rel = np.sum(feature_relevance)
+    total_row_rel = np.sum(row_relevance)
+    
+    # Color logic for the aggregate bars
+    feat_color = '#1f77b4' if total_feat_rel > 0 else '#d62728'
+    row_color = '#1f77b4' if total_row_rel > 0 else '#d62728'
+    
+    bars = ax_balance.bar(["Feats\nTotal", "Rows\nTotal"], [total_feat_rel, total_row_rel], 
+                   color=[feat_color, row_color], width=0.6)
+    ax_balance.axhline(0, color='black')
+    ax_balance.set_title("Net Signal\nBalance", fontsize=12)
+    
+    # Add value labels on top/bottom of balance bars
+    for rect in bars:
+        height = rect.get_height()
+        ax_balance.annotate(f'{height:.2f}',
+                            xy=(rect.get_x() + rect.get_width() / 2, height),
+                            xytext=(0, 3 if height > 0 else -12),
+                            textcoords="offset points",
+                            ha='center', va='bottom', fontsize=10, weight='bold')
+
+    # --- PLOT 3: ROW IMPORTANCE (Right - The Hero) ---
+    x_indices = np.arange(len(row_relevance))
+    class_0_color = "#ff7f0e"
+    class_1_color = "#9467bd"
+    row_colors = [class_0_color if l == 0 else class_1_color for l in support_labels]
+    
+    ax_rows.bar(x_indices, row_relevance, color=row_colors, alpha=0.85)
+    ax_rows.axhline(0, color='black', linewidth=0.8, alpha=0.5)
+    
+    from matplotlib.lines import Line2D
+    custom_lines = [Line2D([0], [0], color=class_0_color, lw=6),
+                    Line2D([0], [0], color=class_1_color, lw=6)]
+    
+    ax_rows.legend(custom_lines, [f'{class_names[0]} Support', f'{class_names[1]} Support'], 
+                   fontsize=12, loc='upper right')
+    
+    ax_rows.set_title("Row importance scores", fontsize=16)
+    ax_rows.set_xlabel("Sample id", fontsize=13)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    print(f"Saving enhanced plot to {filename}...")
+    plt.savefig(filename, dpi=300)
+    plt.close()
+
+
+def prepare_model(device):
     print("Initializing Model...")
     model = NanoTabPFNModel(
         embedding_size=96,
@@ -107,105 +203,223 @@ def main():
 
     model.to(device)
     model.eval()
+    apply_lxt_patches(model) # apply patches
+    return model
 
-    # --- 2. APPLY PATCHES ---
-    apply_lxt_patches(model)
 
-    # --- 3. PREPARE DATA ---
-    data = load_breast_cancer()
+def prepare_data(dataset_id):
+    if dataset_id == 0:
+        data = load_breast_cancer()
+    
     X, y = data.data, data.target
     feature_names = data.feature_names
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=42)
+    class_names = data.target_names
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
+    return X_train, X_test, y_train, y_test, feature_names, class_names
 
-    # Query: 1st Test Patient
-    query_idx = 5
-    X_query = X_test[query_idx].reshape(1, -1)
-    true_label = y_test[query_idx]
+
+def run_batch_explanation(model, device, X_train, y_train, X_test, y_test, feature_names, class_names, results_dir, context_size, test_size):
+    # Ensure results directory exists
+    os.makedirs(results_dir, exist_ok=True)
     
-    # Context: First 50 Training Patients
-    context_size = 50 
+    # 1. Define Fixed Context (History)
+    # We take the first CONTEXT_SIZE samples from the training set
     X_context = X_train[:context_size]
     y_context = y_train[:context_size]
     
-    X_full_np = np.concatenate([X_context, X_query], axis=0)
-    y_full_np = y_context 
-    
-    X_tensor = torch.from_numpy(X_full_np).float().unsqueeze(0).to(device)
-    y_tensor = torch.from_numpy(y_full_np).float().unsqueeze(0).unsqueeze(-1).to(device)
-    train_test_split_index = len(X_context)
+    print(f"--- Starting Batch Inference ---")
+    print(f"Context Size: {context_size} samples")
+    print(f"Test Batch Size: {test_size} samples")
+    print(f"Output Directory: {os.path.abspath(results_dir)}\n")
 
-    # --- 4. RUN EXPLANATION ---
-    print(f"Explaining prediction for Patient #{query_idx}...")
-    
-    model.zero_grad()
-    with torch.no_grad():
-        embeddings = model.get_embeddings((X_tensor, y_tensor), train_test_split_index)
-    
-    embeddings.requires_grad_(True)
-    embeddings.retain_grad()
-    
-    logits = model.forward_from_embeddings(embeddings, train_test_split_index)
-    
-    prediction_logits = logits[0, 0, :]
-    predicted_class = prediction_logits.argmax().item()
-    target_logit = prediction_logits[predicted_class]
-    
-    print(f"Prediction: {predicted_class} (True: {true_label})")
-    
-    target_logit.backward()
-    
-    relevance_map = embeddings * embeddings.grad
-    relevance_map = relevance_map.detach().cpu()
-    
-    # --- 5. PROCESS DATA ---
-    cell_relevance = relevance_map.sum(dim=-1).squeeze(0)
-    
-    # Feature Importance (Slice off target column)
-    feature_importance = cell_relevance[-1, :-1].numpy()
-    
-    # Row Importance (Keep target column for context)
-    row_importance = cell_relevance[:-1, :].sum(dim=1).numpy()
+    # 2. Iterate through Test Samples
+    for i in range(test_size):
+        # Select single query sample
+        X_query = X_test[i]
+        true_label = y_test[i]
+        
+        # Combine Context + Query
+        X_full_np = np.concatenate([X_context, X_query.reshape(1, -1)], axis=0)
+        y_full_np = y_context # Labels for context only
+        
+        # To Tensor
+        X_tensor = torch.from_numpy(X_full_np).float().unsqueeze(0).to(device)
+        y_tensor = torch.from_numpy(y_full_np).float().unsqueeze(0).unsqueeze(-1).to(device)
+        
+        # The split index tells the model where context ends and query begins
+        train_test_split_index = len(X_context)
 
-    # --- 6. SAVE DATA TABLE TO FILE ---
-    print("Constructing Data Table...")
+        # --- Forward Pass & LRP ---
+        model.zero_grad()
+        
+        # A. Embeddings (Gradient Entry Point)
+        with torch.no_grad():
+            embeddings = model.get_embeddings((X_tensor, y_tensor), train_test_split_index)
+        
+        embeddings.requires_grad_(True)
+        embeddings.retain_grad()
+        
+        # B. Transformer Pass
+        logits = model.forward_from_embeddings(embeddings, train_test_split_index)
+        
+        # C. Select Target Logit (Last sample, Predicted Class)
+        prediction_logits = logits[0, 0, :]
+        predicted_class = prediction_logits.argmax().item()
+        target_logit = prediction_logits[predicted_class]
+        
+        # D. Backward Pass (LRP)
+        target_logit.backward()
+        
+        # E. Compute Relevance
+        relevance_map = embeddings * embeddings.grad
+        relevance_map = relevance_map.detach().cpu()
+        cell_relevance = relevance_map.sum(dim=-1).squeeze(0) # Shape: (N_samples, N_features)
+        
+        # --- Extract Explanations ---
+        feature_importance = cell_relevance[-1, :-1].numpy() # Last row, all features (exclude target embedding)
+        row_importance = cell_relevance[:-1, :].sum(dim=1).numpy() # All context rows, sum over features
+        
+        # # --- Save CSV Table ---
+        # # Support Data
+        # df_support = pd.DataFrame(X_context, columns=feature_names)
+        # df_support.insert(0, 'Index', np.arange(len(df_support)))
+        # df_support.insert(1, 'Type', 'Support')
+        # df_support.insert(2, 'True_Label', y_context)
+        # df_support.insert(3, 'LRP_Relevance', row_importance)
 
-    # Construct Support DataFrame
-    df_support = pd.DataFrame(X_context, columns=feature_names)
-    df_support.insert(0, 'Index', np.arange(len(df_support))) # Explicit Index Column
-    df_support.insert(1, 'Type', 'Support')
-    df_support.insert(2, 'Target_Label', y_context)
-    df_support.insert(3, 'LRP_Relevance', row_importance)
+        # # Query Data
+        # df_query = pd.DataFrame(X_query.reshape(1, -1), columns=feature_names)
+        # df_query.insert(0, 'Index', len(df_support))
+        # df_query.insert(1, 'Type', 'Query')
+        # df_query.insert(2, 'True_Label', true_label)
+        # df_query.insert(3, 'LRP_Relevance', 0.0) # Placeholder
+        
+        # df_combined = pd.concat([df_support, df_query], ignore_index=True)
+        
+        # # Add metadata column for readability
+        # df_combined['Prediction'] = predicted_class
+        # df_combined['Prediction_Correct'] = (predicted_class == true_label)
+        
+        # csv_filename = os.path.join(results_dir, f"sample_{i}_explanation.csv")
+        # df_combined.to_csv(csv_filename, index=False)
+        
+        # --- Save Plot ---
+        plot_filename = os.path.join(results_dir, f"sample_{i}_plot.png")
+        # save_visualizations(feature_importance, row_importance, feature_names, y_context, predicted_class, plot_filename)
+        save_enhanced_visualizations(
+            feature_importance, row_importance, feature_names, X_query, 
+            y_context, predicted_class, true_label, class_names, prediction_logits, plot_filename
+        )
 
-    # Construct Query DataFrame
-    df_query = pd.DataFrame(X_query, columns=feature_names)
-    df_query.insert(0, 'Index', len(df_support)) # Continue index
-    df_query.insert(1, 'Type', 'Query')
-    df_query.insert(2, 'Target_Label', true_label)
-    df_query.insert(3, 'LRP_Relevance', np.nan) # No row relevance for itself
+        # Save CSV (Simplified for brevity)
+        csv_filename = os.path.join(results_dir, f"sample_{i}_data.csv")
+        df = pd.DataFrame({'Feature': feature_names, 'Value': X_query, 'Relevance': feature_importance})
+        df.sort_values(by='Relevance', key=abs, ascending=False).to_csv(csv_filename, index=False)
+        
+        print(f"Sample {i}: Pred={class_names[predicted_class]} | True={class_names[true_label]} -> Saved.")
 
-    # Combine
-    df_combined = pd.concat([df_support, df_query], ignore_index=True)
+def main():
+    device = get_default_device()
+    print(f"Running on device: {device}")
+    model = prepare_model(device)    
+    X_train, X_test, y_train, y_test, feature_names, class_names = prepare_data(dataset_id=0)
+    # X1_train, X1_test, y1_train, y1_test, feature_names1 = prepare_data(dataset_id=1)
+    # X2_train, X2_test, y2_train, y2_test, feature_names2 = prepare_data(dataset_id=2)
+    run_batch_explanation(
+        model, device,
+        X_train, y_train, X_test, y_test,
+        feature_names, class_names, "results_0",
+        len(X_train), len(X_test)
+    )
+    print("Batch processing complete")
+
+    # query_idx = 5
+    # X_query = X_test[query_idx].reshape(1, -1)
+    # true_label = y_test[query_idx]
     
-    # Reorder columns to put top features next to relevance
-    # Find top 5 most important features for this specific prediction
-    top_indices = np.argsort(np.abs(feature_importance))[-5:][::-1]
-    top_feats = list(np.array(feature_names)[top_indices])
+    # context_size = 50 
+    # X_context = X_train[:context_size]
+    # y_context = y_train[:context_size]
     
-    # Base columns + Top 5 features + Rest of features
-    base_cols = ['Index', 'Type', 'Target_Label', 'LRP_Relevance']
-    remaining_feats = [f for f in feature_names if f not in top_feats]
-    final_cols = base_cols + top_feats + remaining_feats
+    # X_full_np = np.concatenate([X_context, X_query], axis=0)
+    # y_full_np = y_context 
     
-    df_combined = df_combined[final_cols]
+    # X_tensor = torch.from_numpy(X_full_np).float().unsqueeze(0).to(device)
+    # y_tensor = torch.from_numpy(y_full_np).float().unsqueeze(0).unsqueeze(-1).to(device)
+    # train_test_split_index = len(X_context)
 
-    csv_filename = "explanation_table.csv"
-    print(f"Saving full data table to {csv_filename}...")
-    df_combined.to_csv(csv_filename, index=False)
-
-    # --- 7. SAVE PLOTS ---
-    save_visualizations(feature_importance, row_importance, feature_names, y_context, predicted_class)
+    # # Explanation:
+    # print(f"Explaining prediction for Patient #{query_idx}...")
     
-    print("Done. Check 'explanation_table.csv' and 'explanation_plot.png'.")
+    # model.zero_grad()
+    # with torch.no_grad():
+    #     embeddings = model.get_embeddings((X_tensor, y_tensor), train_test_split_index)
+    
+    # embeddings.requires_grad_(True)
+    # embeddings.retain_grad()
+    
+    # logits = model.forward_from_embeddings(embeddings, train_test_split_index)
+    
+    # prediction_logits = logits[0, 0, :]
+    # predicted_class = prediction_logits.argmax().item()
+    # target_logit = prediction_logits[predicted_class]
+    
+    # print(f"Prediction: {predicted_class} (True: {true_label})")
+    
+    # target_logit.backward()
+    
+    # relevance_map = embeddings * embeddings.grad
+    # relevance_map = relevance_map.detach().cpu()
+    
+    # # --- 5. PROCESS DATA ---
+    # cell_relevance = relevance_map.sum(dim=-1).squeeze(0)
+    
+    # # Feature Importance (Slice off target column)
+    # feature_importance = cell_relevance[-1, :-1].numpy()
+    
+    # # Row Importance (Keep target column for context)
+    # row_importance = cell_relevance[:-1, :].sum(dim=1).numpy()
+
+    # # --- 6. SAVE DATA TABLE TO FILE ---
+    # print("Constructing Data Table...")
+
+    # # Construct Support DataFrame
+    # df_support = pd.DataFrame(X_context, columns=feature_names)
+    # df_support.insert(0, 'Index', np.arange(len(df_support))) # Explicit Index Column
+    # df_support.insert(1, 'Type', 'Support')
+    # df_support.insert(2, 'Target_Label', y_context)
+    # df_support.insert(3, 'LRP_Relevance', row_importance)
+
+    # # Construct Query DataFrame
+    # df_query = pd.DataFrame(X_query, columns=feature_names)
+    # df_query.insert(0, 'Index', len(df_support)) # Continue index
+    # df_query.insert(1, 'Type', 'Query')
+    # df_query.insert(2, 'Target_Label', true_label)
+    # df_query.insert(3, 'LRP_Relevance', np.nan) # No row relevance for itself
+
+    # # Combine
+    # df_combined = pd.concat([df_support, df_query], ignore_index=True)
+    
+    # # Reorder columns to put top features next to relevance
+    # # Find top 5 most important features for this specific prediction
+    # top_indices = np.argsort(np.abs(feature_importance))[-5:][::-1]
+    # top_feats = list(np.array(feature_names)[top_indices])
+    
+    # # Base columns + Top 5 features + Rest of features
+    # base_cols = ['Index', 'Type', 'Target_Label', 'LRP_Relevance']
+    # remaining_feats = [f for f in feature_names if f not in top_feats]
+    # final_cols = base_cols + top_feats + remaining_feats
+    
+    # df_combined = df_combined[final_cols]
+
+    # csv_filename = "explanation_table.csv"
+    # print(f"Saving full data table to {csv_filename}...")
+    # df_combined.to_csv(csv_filename, index=False)
+
+    # # --- 7. SAVE PLOTS ---
+    # save_visualizations(feature_importance, row_importance, feature_names, y_context, predicted_class)
+    
+    # print("Done. Check 'explanation_table.csv' and 'explanation_plot.png'.")
 
 if __name__ == "__main__":
     main()
