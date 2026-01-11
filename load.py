@@ -25,14 +25,21 @@ model.to(device)
 model.eval() # Crucial for inference
 
 X, y = load_breast_cancer(return_X_y=True)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.08, random_state=42)
 
 print("Test batch size:", len(X_test))
+print("Train set size:", len(X_train))
 
 for i in range(20, 400, 20):
     X_train_cut = X_train[i:i+40]
     y_train_cut = y_train[i:i+40]
+    # --- SAFETY CHECK ---
+    # Ensure our small slice actually contains both cancer types.
+    # If we feed the model only one type, it cannot learn the difference.
+    if len(set(y_train_cut)) < 2:
+        print(f"Skipping index {i}: Context lacks class diversity (contains only {set(y_train_cut)})")
+        continue
     classifier = NanoTabPFNClassifier(model, device)
     classifier.fit(X_train_cut, y_train_cut)
     preds = classifier.predict(X_test)
-    print(f"Accuracy for train size {i}: {accuracy_score(y_test, preds)}")
+    print(f"Accuracy for slice {i}-{i+40}: {accuracy_score(y_test, preds)}")
