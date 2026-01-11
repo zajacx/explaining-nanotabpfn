@@ -2,3 +2,4 @@ __pycache__/
 *.pth
 *.h5
 results_*
+wnioski.md

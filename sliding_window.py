@@ -1,6 +1,7 @@
 # Hypothesis: choice of context doesn't matter for some particular rows;
-# they are always misclassfied
+# they are always misclassfied (or almost always)
 
+import os
 import torch
 import numpy as np
 import pandas as pd
@@ -11,10 +12,41 @@ from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
+# --- CONFIG ---
+OUTPUT_DIR = "error_analysis_data"
+WEIGHTS_PATH = "nanotabpfn_weights.pth"
+
 def get_default_device():
     if torch.cuda.is_available(): return "cuda"
     if torch.backends.mps.is_available(): return "mps"
     return "cpu"
+
+def save_lookup_tables(X_test, y_test, X_train, y_train, feature_names):
+    """Saves test and train data to CSVs with explicit indices for cross-referencing."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    # 1. Save Test Set (Rows in Heatmap)
+    # We add an 'Experiment_Index' (0-56) to match the heatmap X-axis
+    df_test = pd.DataFrame(X_test, columns=feature_names)
+    df_test.insert(0, 'Heatmap_Index', np.arange(len(X_test)))
+    df_test['True_Label'] = y_test
+    # Map labels to names for readability
+    df_test['Label_Name'] = df_test['True_Label'].map({0: 'Malignant', 1: 'Benign'}) 
+    
+    test_path = os.path.join(OUTPUT_DIR, "test_set_lookup.csv")
+    df_test.to_csv(test_path, index=False)
+    print(f"Saved Test Set Lookup -> {test_path}")
+
+    # 2. Save Full Training Set (Source of Slices)
+    # We add an 'Array_Index' so you know which rows corresponded to slice 20:60
+    df_train = pd.DataFrame(X_train, columns=feature_names)
+    df_train.insert(0, 'Array_Index', np.arange(len(X_train)))
+    df_train['True_Label'] = y_train
+    df_train['Label_Name'] = df_train['True_Label'].map({0: 'Malignant', 1: 'Benign'})
+    
+    train_path = os.path.join(OUTPUT_DIR, "training_data_full.csv")
+    df_train.to_csv(train_path, index=False)
+    print(f"Saved Training Data Lookup -> {train_path}")
 
 def main():
     device = get_default_device()
@@ -39,9 +71,11 @@ def main():
     model.eval()
 
     # 2. Setup Data
-    X, y = load_breast_cancer(return_X_y=True)
+    data = load_breast_cancer()
+    X, y = data.data, data.target
+    feature_names = data.feature_names
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.08, random_state=42)
-    
+    save_lookup_tables(X_test, y_test, X_train, y_train, feature_names)
     print(f"Test set size: {len(X_test)}")
     
     # 3. Experiment Loop
