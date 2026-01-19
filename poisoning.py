@@ -17,6 +17,8 @@ SEGMENT_SIZE = 40
 CONTEXT_SIZES = [15, 20, 25, 30, 35, 40]
 NUM_CONTEXTS_PER_SIZE = 3  # How many diverse contexts to generate per size
 TEST_SET_SIZE = 50
+LEADERS_FRAC = 0.0
+INFLUENCERS_FRAC = 0.6
 
 class NumpyEncoder(json.JSONEncoder):
     """ Helper to save Numpy data to JSON """
@@ -138,8 +140,8 @@ def engineer_gaussian_contexts(X, y, scores, context_sizes):
     
     for size in context_sizes:
         # Target Counts (1:4:5 ratio)
-        n_lead_target = max(1, int(0.10 * size))
-        n_inf_target = int(0.40 * size)
+        n_lead_target = max(1, int(LEADERS_FRAC * size))
+        n_inf_target = int(INFLUENCERS_FRAC * size)
         n_crowd_target = size - n_lead_target - n_inf_target
         
         for i in range(NUM_CONTEXTS_PER_SIZE):
