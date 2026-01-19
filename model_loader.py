@@ -9,10 +9,6 @@ from math import pi
 from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
-
-# Assuming these imports exist in your project structure
-# If model.py is in the same directory, these work.
-from model import NanoTabPFNModel
 from lxt.efficient.patches import (
     patch_method, 
     layer_norm_forward, 
@@ -20,14 +16,15 @@ from lxt.efficient.patches import (
     cp_multi_head_attention_forward
 )
 
-WEIGHTS_PATH = "prior/weights.pth"
+from model import NanoTabPFNModel
 
+
+WEIGHTS_PATH = "prior/weights.pth"
 
 def get_default_device():
     if torch.cuda.is_available(): return "cuda"
     if torch.backends.mps.is_available(): return "mps"
     return "cpu"
-
 
 def apply_lxt_patches(model):
     """Patches the model layers to be LRP-compatible."""
@@ -42,7 +39,8 @@ def apply_lxt_patches(model):
             patch_method(types.MethodType(cp_multi_head_attention_forward, module), module, "forward")
 
 
-def get_model(device):
+def get_model():
+    device = get_default_device()
     print("[Init] Initializing model...")
     model = NanoTabPFNModel(
         embedding_size=96,
@@ -62,4 +60,4 @@ def get_model(device):
     model.to(device)
     model.eval()
     apply_lxt_patches(model)
-    return model
+    return model, device

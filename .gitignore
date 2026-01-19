@@ -1,5 +1,7 @@
 __pycache__/
 *.pth
 *.h5
-results_*
+old*
+context*
+results*
 wnioski.md
