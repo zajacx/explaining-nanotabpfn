@@ -179,7 +179,7 @@ if __name__ == "__main__":
         num_layers=3,
         num_outputs=2
     )
-    prior = PriorDumpDataLoader("300k_150x5_2.h5", num_steps=100, batch_size=32, device=device) #num_steps=2500
+    prior = PriorDumpDataLoader("prior/300k_150x5_2.h5", num_steps=100, batch_size=32, device=device) #num_steps=2500
     model, history = train(model, prior, lr=1e-4, steps_per_eval=25)
     print("Final evaluation:")
     print(eval(NanoTabPFNClassifier(model, device)))
